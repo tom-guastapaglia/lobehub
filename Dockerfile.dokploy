@@ -1,0 +1,33 @@
+# Dockerfile simple pour déploiement (Dokploy, etc.)
+# Contrôle total : Node 20 + pnpm, pas de Nixpacks.
+
+FROM node:20.19-bullseye
+
+# Bun (utilisé par les scripts de build du monorepo)
+RUN curl -fsSL https://bun.sh/install | bash
+ENV PATH="/root/.bun/bin:$PATH"
+
+# pnpm (version figée pour reproductibilité)
+RUN corepack enable && npm install -g pnpm@10.12.0
+
+WORKDIR /app
+
+# Fichiers nécessaires au résolution du workspace (monorepo)
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc ./
+COPY packages ./packages
+COPY patches ./patches
+COPY apps/desktop/src/main/package.json ./apps/desktop/src/main/package.json
+
+# Install des deps (pas de frozen-lockfile pour plus de tolérance en build)
+RUN pnpm install --no-frozen-lockfile
+
+# Tout le reste du code
+COPY . .
+
+# Build avec assez de mémoire (SPA + Next)
+ENV NODE_OPTIONS="--max-old-space-size=8192"
+RUN pnpm run build
+
+EXPOSE 3210
+
+CMD ["pnpm", "start"]
