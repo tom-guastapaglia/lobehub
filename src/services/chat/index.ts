@@ -2,7 +2,7 @@ import { AgentBuilderIdentifier } from '@lobechat/builtin-tool-agent-builder';
 import { KLAVIS_SERVER_TYPES, LOBEHUB_SKILL_PROVIDERS } from '@lobechat/const';
 import { type OfficialToolItem } from '@lobechat/context-engine';
 import { type FetchSSEOptions } from '@lobechat/fetch-sse';
-import { fetchSSE, getMessageError, standardizeAnimationStyle } from '@lobechat/fetch-sse';
+import { fetchSSE, standardizeAnimationStyle } from '@lobechat/fetch-sse';
 import { type ChatCompletionErrorPayload } from '@lobechat/model-runtime';
 import { AgentRuntimeError } from '@lobechat/model-runtime';
 import {
@@ -12,8 +12,6 @@ import {
   type UIChatMessage,
 } from '@lobechat/types';
 import { ChatErrorType, TraceTagMap } from '@lobechat/types';
-import { type PluginRequestPayload } from '@lobehub/chat-plugin-sdk';
-import { createHeadersWithPluginSettings } from '@lobehub/chat-plugin-sdk';
 import { merge } from 'es-toolkit/compat';
 import { ModelProvider } from 'model-bank';
 
@@ -32,7 +30,6 @@ import {
   builtinToolSelectors,
   klavisStoreSelectors,
   lobehubSkillStoreSelectors,
-  pluginSelectors,
 } from '@/store/tool/selectors';
 import { getUserStoreState, useUserStore } from '@/store/user';
 import {
@@ -42,7 +39,7 @@ import {
 } from '@/store/user/selectors';
 import { type ChatStreamPayload, type OpenAIChatMessage } from '@/types/openai/chat';
 import { createErrorResponse } from '@/utils/errorResponse';
-import { createTraceHeader, getTraceId } from '@/utils/trace';
+import { createTraceHeader } from '@/utils/trace';
 
 import { createHeaderWithAuth } from '../_auth';
 import { API_ENDPOINTS } from '../_url';
@@ -141,7 +138,10 @@ class ChatService {
 
     // =================== 1.1 process user memories =================== //
 
-    const enableUserMemories = settingsSelectors.memoryEnabled(getUserStoreState());
+    const userLevelMemoryEnabled = settingsSelectors.memoryEnabled(getUserStoreState());
+    // Agent-level memory toggle takes priority over user-level setting,
+    // matching the logic in useMemoryEnabled hook
+    const enableUserMemories = chatConfig.memory?.enabled ?? userLevelMemoryEnabled;
     const userMemorySettings = settingsSelectors.currentMemorySettings(getUserStoreState());
     const effectiveMemoryEffort =
       chatConfig.memory?.effort ?? userMemorySettings.effort ?? 'medium';
@@ -244,8 +244,8 @@ class ChatService {
       enableHistoryCount: chatConfig.enableHistoryCount,
       enableUserMemories,
       groupId,
-      // historyCount + 2 accounts for: 1 user message + 1 assistant response being added
-      historyCount: (chatConfig.historyCount ?? 20) + 2,
+      // historyCount is number of history messages; add 1 for current user message
+      historyCount: (chatConfig.historyCount ?? 20) + 1,
       // Page editor context from agent runtime
       initialContext: options?.initialContext,
       inputTemplate: chatConfig.inputTemplate,
@@ -345,6 +345,8 @@ class ChatService {
     const chatConfig = agentChatConfigSelectors.currentChatConfig(getAgentStoreState());
 
     delete (res as any).scope;
+    // Fork flow stores market metadata in agent.params; must not reach OpenAI-compatible / Responses API
+    delete (res as any).forkedFromIdentifier;
 
     const payload = merge(
       {
@@ -430,43 +432,15 @@ class ChatService {
       onErrorHandle: options?.onErrorHandle,
       onFinish: options?.onFinish,
       onMessageHandle: options?.onMessageHandle,
+      requestContext: {
+        apiMode,
+        fetchOnClient: enableFetchOnClient,
+        model,
+        provider,
+      },
       responseAnimation: mergedResponseAnimation,
       signal,
     });
-  };
-
-  /**
-   * run the plugin api to get result
-   * @param params
-   * @param options
-   */
-  runPluginApi = async (params: PluginRequestPayload, options?: FetchOptions) => {
-    const s = getToolStoreState();
-
-    const settings = pluginSelectors.getPluginSettingsById(params.identifier)(s);
-    const manifest = pluginSelectors.getToolManifestById(params.identifier)(s);
-
-    const traceHeader = createTraceHeader(this.mapTrace(options?.trace, TraceTagMap.ToolCalling));
-
-    const headers = await createHeaderWithAuth({
-      headers: { ...createHeadersWithPluginSettings(settings), ...traceHeader },
-    });
-
-    const gatewayURL = manifest?.gateway ?? API_ENDPOINTS.gateway;
-
-    const res = await fetch(gatewayURL, {
-      body: JSON.stringify({ ...params, manifest }),
-      headers,
-      method: 'POST',
-      signal: options?.signal,
-    });
-
-    if (!res.ok) {
-      throw await getMessageError(res);
-    }
-
-    const text = await res.text();
-    return { text, traceId: getTraceId(res) };
   };
 
   fetchPresetTaskResult = async ({

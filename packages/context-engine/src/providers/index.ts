@@ -1,6 +1,15 @@
 // Context Provider exports
 export { AgentBuilderContextInjector } from './AgentBuilderContextInjector';
+export {
+  AGENT_DOCUMENT_INJECTION_POSITIONS,
+  AgentDocumentBeforeSystemInjector,
+  AgentDocumentContextInjector,
+  AgentDocumentMessageInjector,
+  AgentDocumentSystemAppendInjector,
+  AgentDocumentSystemReplaceInjector,
+} from './AgentDocumentInjector';
 export { AgentManagementContextInjector } from './AgentManagementContextInjector';
+export { BotPlatformContextInjector } from './BotPlatformContextInjector';
 export { DiscordContextProvider } from './DiscordContextProvider';
 export { EvalContextSystemInjector } from './EvalContextSystemInjector';
 export { ForceFinishSummaryInjector } from './ForceFinishSummaryInjector';
@@ -18,6 +27,7 @@ export { SystemDateProvider } from './SystemDateProvider';
 export { SystemRoleInjector } from './SystemRoleInjector';
 export { ToolDiscoveryProvider } from './ToolDiscoveryProvider';
 export { ToolSystemRoleProvider } from './ToolSystemRole';
+export { TopicReferenceContextInjector } from './TopicReferenceContextInjector';
 export { UserMemoryInjector } from './UserMemoryInjector';
 
 // Re-export types
@@ -27,12 +37,27 @@ export type {
   OfficialToolItem,
 } from './AgentBuilderContextInjector';
 export type {
+  AgentContextDocument,
+  AgentDocumentBeforeSystemInjectorConfig,
+  AgentDocumentContextInjectorConfig,
+  AgentDocumentInjectionPosition,
+  AgentDocumentLoadRule,
+  AgentDocumentLoadRules,
+  AgentDocumentMessageInjectorConfig,
+  AgentDocumentSystemAppendInjectorConfig,
+  AgentDocumentSystemReplaceInjectorConfig,
+} from './AgentDocumentInjector';
+export type {
   AgentManagementContext,
   AgentManagementContextInjectorConfig,
   AvailableModelInfo,
   AvailablePluginInfo,
   AvailableProviderInfo,
 } from './AgentManagementContextInjector';
+export type {
+  BotPlatformContext,
+  BotPlatformContextInjectorConfig,
+} from './BotPlatformContextInjector';
 export type { DiscordContext, DiscordContextProviderConfig } from './DiscordContextProvider';
 export type { EvalContext, EvalContextSystemInjectorConfig } from './EvalContextSystemInjector';
 export type { ForceFinishSummaryInjectorConfig } from './ForceFinishSummaryInjector';
@@ -58,4 +83,8 @@ export type { SystemDateProviderConfig } from './SystemDateProvider';
 export type { SystemRoleInjectorConfig } from './SystemRoleInjector';
 export type { ToolDiscoveryMeta, ToolDiscoveryProviderConfig } from './ToolDiscoveryProvider';
 export type { ToolSystemRoleConfig } from './ToolSystemRole';
+export type {
+  TopicReferenceContextInjectorConfig,
+  TopicReferenceItem,
+} from './TopicReferenceContextInjector';
 export type { MemoryContext, UserMemoryInjectorConfig } from './UserMemoryInjector';

@@ -13,7 +13,7 @@ Guidelines for using Claude Code in this LobeHub repository.
 
 ## Project Structure
 
-```
+```plaintext
 lobehub/
 ├── apps/desktop/           # Electron desktop app
 ├── packages/               # Shared packages (@lobechat/*)
@@ -60,6 +60,7 @@ When adding or changing SPA routes:
 1. In `src/routes/`, add only the route segment files (layout + page) that delegate to features.
 2. Implement layout and page content under `src/features/<Domain>/` and export from there.
 3. In route files, use `import { X } from '@/features/<Domain>'` (or `import Y from '@/features/<Domain>/...'`). Do not add new `features/` folders inside `src/routes/`.
+4. **Register the desktop route tree in both configs:** `src/spa/router/desktopRouter.config.tsx` and `src/spa/router/desktopRouter.config.desktop.tsx` must stay in sync (same paths and nesting). Updating only one can cause **blank screens** if the other build path expects the route.
 
 See the **spa-routes** skill (`.agents/skills/spa-routes/SKILL.md`) for the full convention and file-division rules.
 
@@ -77,7 +78,7 @@ bun run dev
 
 After `dev:spa` starts, the terminal prints a **Debug Proxy** URL:
 
-```
+```plaintext
 Debug Proxy: https://app.lobehub.com/_dangerous_local_dev_proxy?debug-host=http%3A%2F%2Flocalhost%3A9876
 ```
 
@@ -116,20 +117,6 @@ cd packages/database && bunx vitest run --silent='passed-only' '[file]'
 - Add keys to `src/locales/default/namespace.ts`
 - For dev preview: translate `locales/zh-CN/` and `locales/en-US/`
 - Don't run `pnpm i18n` - CI handles it
-
-## Linear Issue Management
-
-**Trigger conditions** - when ANY of these occur, apply Linear workflow:
-
-- User mentions issue ID like `LOBE-XXX`
-- User says "linear", "link linear", "linear issue"
-- Creating PR that references a Linear issue
-
-**Workflow:**
-
-1. Use `ToolSearch` to confirm `linear-server` MCP exists (search `linear` or `mcp__linear-server__`)
-2. If found, read `.agents/skills/linear/SKILL.md` and follow the workflow
-3. If not found, skip Linear integration (treat as not installed)
 
 ## Skills (Auto-loaded by Claude)
 

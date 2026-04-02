@@ -1,28 +1,37 @@
 import { isDesktop } from '@lobechat/const';
+import { chainInputCompletion } from '@lobechat/prompts';
 import { HotkeyEnum, KeyEnum } from '@lobechat/types';
-import { isCommandPressed } from '@lobechat/utils';
-import { INSERT_MENTION_COMMAND, ReactMathPlugin, type SlashOptions } from '@lobehub/editor';
+import { isCommandPressed, merge } from '@lobechat/utils';
+import { INSERT_MENTION_COMMAND, ReactAutoCompletePlugin, ReactMathPlugin } from '@lobehub/editor';
 import { Editor, FloatMenu, useEditorState } from '@lobehub/editor/react';
 import { combineKeys } from '@lobehub/ui';
 import { css, cx } from 'antd-style';
-import { memo, useCallback, useEffect, useMemo } from 'react';
+import Fuse from 'fuse.js';
+import { memo, useCallback, useEffect, useMemo, useRef } from 'react';
 import { useHotkeysContext } from 'react-hotkeys-hook';
 
 import { usePasteFile, useUploadFiles } from '@/components/DragUploadZone';
 import { useIMECompositionEvent } from '@/hooks/useIMECompositionEvent';
+import { chatService } from '@/services/chat';
 import { useAgentStore } from '@/store/agent';
 import { agentByIdSelectors } from '@/store/agent/selectors';
 import { useUserStore } from '@/store/user';
-import { labPreferSelectors, preferenceSelectors, settingsSelectors } from '@/store/user/selectors';
+import {
+  labPreferSelectors,
+  preferenceSelectors,
+  settingsSelectors,
+  systemAgentSelectors,
+} from '@/store/user/selectors';
 
 import { useAgentId } from '../hooks/useAgentId';
 import { useChatInputStore, useStoreApi } from '../store';
 import { useSlashActionItems } from './ActionTag';
+import { createMentionMenu } from './MentionMenu';
+import type { MentionMenuState } from './MentionMenu/types';
 import Placeholder from './Placeholder';
 import { CHAT_INPUT_EMBED_PLUGINS, createChatInputRichPlugins } from './plugins';
 import { INSERT_REFER_TOPIC_COMMAND } from './ReferTopic';
-import { useAgentMentionItems } from './useAgentMentionItems';
-import { useTopicMentionItems } from './useTopicMentionItems';
+import { useMentionCategories } from './useMentionCategories';
 
 const className = cx(css`
   p {
@@ -31,14 +40,13 @@ const className = cx(css`
 `);
 
 const InputEditor = memo<{ defaultRows?: number }>(({ defaultRows = 2 }) => {
-  const [editor, slashMenuRef, send, updateMarkdownContent, expand, mentionItems, slashPlacement] =
+  const [editor, slashMenuRef, send, updateMarkdownContent, expand, slashPlacement] =
     useChatInputStore((s) => [
       s.editor,
       s.slashMenuRef,
       s.handleSendButton,
       s.updateMarkdownContent,
       s.expand,
-      s.mentionItems,
       s.slashPlacement ?? 'top',
     ]);
 
@@ -51,32 +59,40 @@ const InputEditor = memo<{ defaultRows?: number }>(({ defaultRows = 2 }) => {
 
   const useCmdEnterToSend = useUserStore(preferenceSelectors.useCmdEnterToSend);
 
-  const topicMentionItems = useTopicMentionItems();
-  const agentMentionItems = useAgentMentionItems();
+  // --- Category-based mention system ---
+  const categories = useMentionCategories();
+  const stateRef = useRef<MentionMenuState>({ isSearch: false, matchingString: '' });
+  const categoriesRef = useRef(categories);
+  categoriesRef.current = categories;
 
-  const mergedMentionItems = useMemo<SlashOptions['items'] | undefined>(() => {
-    const topicItems = topicMentionItems || [];
-    // In non-group context, use agent items from hook; in group context, use injected mentionItems
-    const fallbackAgentItems = !mentionItems ? agentMentionItems : [];
+  const allMentionItems = useMemo(() => categories.flatMap((c) => c.items), [categories]);
 
-    if (!mentionItems && fallbackAgentItems.length === 0 && topicItems.length === 0)
-      return undefined;
+  const fuse = useMemo(
+    () =>
+      new Fuse(allMentionItems, {
+        keys: ['key', 'label', 'metadata.topicTitle'],
+        threshold: 0.3,
+      }),
+    [allMentionItems],
+  );
 
-    if (typeof mentionItems === 'function') {
-      const fn = mentionItems;
-      return async (search: Parameters<typeof fn>[0]) => {
-        const groupItems = await fn(search);
-        return [...groupItems, ...topicItems];
-      };
-    }
+  const mentionItemsFn = useCallback(
+    async (
+      search: { leadOffset: number; matchingString: string; replaceableString: string } | null,
+    ) => {
+      if (search?.matchingString) {
+        stateRef.current = { isSearch: true, matchingString: search.matchingString };
+        return fuse.search(search.matchingString).map((r) => r.item);
+      }
+      stateRef.current = { isSearch: false, matchingString: '' };
+      return [...allMentionItems];
+    },
+    [allMentionItems, fuse],
+  );
 
-    const externalItems = Array.isArray(mentionItems) ? mentionItems : [];
-    return [...externalItems, ...fallbackAgentItems, ...topicItems];
-  }, [mentionItems, topicMentionItems, agentMentionItems]);
+  const MentionMenuComp = useMemo(() => createMentionMenu(stateRef, categoriesRef), []);
 
-  const enableMention =
-    !!mergedMentionItems &&
-    (typeof mergedMentionItems === 'function' || mergedMentionItems.length > 0);
+  const enableMention = allMentionItems.length > 0;
 
   // Get agent's model info for vision support check and handle paste upload
   const agentId = useAgentId();
@@ -116,30 +132,93 @@ const InputEditor = memo<{ defaultRows?: number }>(({ defaultRows = 2 }) => {
     [slashActionItems],
   );
 
-  const richRenderProps = useMemo(
-    () =>
-      !enableRichRender
-        ? {
-            enablePasteMarkdown: false,
-            markdownOption: false,
-            plugins: CHAT_INPUT_EMBED_PLUGINS,
-          }
-        : {
-            plugins: createChatInputRichPlugins({
-              mathPlugin: Editor.withProps(ReactMathPlugin, {
-                renderComp: expand
-                  ? undefined
-                  : (props) => (
-                      <FloatMenu
-                        {...props}
-                        getPopupContainer={() => (slashMenuRef as any)?.current}
-                      />
-                    ),
-              }),
-            }),
+  // --- Auto-completion ---
+  const inputCompletionConfig = useUserStore(systemAgentSelectors.inputCompletion);
+  const isAutoCompleteEnabled = inputCompletionConfig.enabled;
+
+  const getMessagesRef = useRef(storeApi.getState().getMessages);
+  useEffect(() => {
+    return storeApi.subscribe((s) => {
+      getMessagesRef.current = s.getMessages;
+    });
+  }, [storeApi]);
+
+  const handleAutoComplete = useCallback(
+    async ({
+      abortSignal,
+      afterText,
+      input,
+    }: {
+      abortSignal: AbortSignal;
+      afterText: string;
+      editor: any;
+      input: string;
+      selectionType: string;
+    }): Promise<string | null> => {
+      if (!input.trim()) return null;
+
+      const { enabled: _, ...config } = systemAgentSelectors.inputCompletion(
+        useUserStore.getState(),
+      );
+      const context = getMessagesRef.current?.();
+      const chainParams = chainInputCompletion(input, afterText, context);
+
+      const abortController = new AbortController();
+      abortSignal.addEventListener('abort', () => abortController.abort());
+
+      let result = '';
+
+      try {
+        await chatService.fetchPresetTaskResult({
+          abortController,
+          onMessageHandle: (chunk) => {
+            if (chunk.type === 'text') {
+              result += chunk.text;
+            }
           },
-    [enableRichRender, expand, slashMenuRef],
+          params: merge(config, chainParams),
+        });
+      } catch {
+        return null;
+      }
+
+      if (abortSignal.aborted) return null;
+
+      return result || null;
+    },
+    [],
   );
+
+  const autoCompletePlugin = useMemo(
+    () =>
+      isAutoCompleteEnabled
+        ? Editor.withProps(ReactAutoCompletePlugin, {
+            delay: 600,
+            onAutoComplete: handleAutoComplete,
+          })
+        : null,
+    [isAutoCompleteEnabled, handleAutoComplete],
+  );
+
+  const richRenderProps = useMemo(() => {
+    const basePlugins = !enableRichRender
+      ? CHAT_INPUT_EMBED_PLUGINS
+      : createChatInputRichPlugins({
+          mathPlugin: Editor.withProps(ReactMathPlugin, {
+            renderComp: expand
+              ? undefined
+              : (props) => (
+                  <FloatMenu {...props} getPopupContainer={() => (slashMenuRef as any)?.current} />
+                ),
+          }),
+        });
+
+    const plugins = autoCompletePlugin ? [...basePlugins, autoCompletePlugin] : basePlugins;
+
+    return !enableRichRender
+      ? { enablePasteMarkdown: false, markdownOption: false, plugins }
+      : { plugins };
+  }, [enableRichRender, expand, slashMenuRef, autoCompletePlugin]);
 
   return (
     <Editor
@@ -156,14 +235,14 @@ const InputEditor = memo<{ defaultRows?: number }>(({ defaultRows = 2 }) => {
       mentionOption={
         enableMention
           ? {
-              fuseOptions: { keys: ['key', 'label', 'metadata.topicTitle'], threshold: 0.3 },
-              items: mergedMentionItems,
+              items: mentionItemsFn,
               markdownWriter: (mention) => {
                 if (mention.metadata?.type === 'topic') {
                   return `<refer_topic name="${mention.metadata.topicTitle}" id="${mention.metadata.topicId}" />`;
                 }
                 return `<mention name="${mention.label}" id="${mention.metadata.id}" />`;
               },
+              maxLength: 50,
               onSelect: (editor, option) => {
                 if (option.metadata?.type === 'topic') {
                   editor.dispatchCommand(INSERT_REFER_TOPIC_COMMAND, {
@@ -177,6 +256,7 @@ const InputEditor = memo<{ defaultRows?: number }>(({ defaultRows = 2 }) => {
                   });
                 }
               },
+              renderComp: MentionMenuComp,
             }
           : undefined
       }
@@ -188,7 +268,6 @@ const InputEditor = memo<{ defaultRows?: number }>(({ defaultRows = 2 }) => {
       }}
       onCompositionEnd={({ event }) => compositionProps.onCompositionEnd(event)}
       onCompositionStart={({ event }) => compositionProps.onCompositionStart(event)}
-      onInit={(editor) => storeApi.setState({ editor })}
       onBlur={() => {
         disableScope(HotkeyEnum.AddUserMessage);
       }}
@@ -210,11 +289,28 @@ const InputEditor = memo<{ defaultRows?: number }>(({ defaultRows = 2 }) => {
       onFocus={() => {
         enableScope(HotkeyEnum.AddUserMessage);
       }}
+      onInit={(editor) => {
+        const saved = storeApi.getState()._savedEditorState;
+        storeApi.setState({ _savedEditorState: undefined, editor });
+        if (saved) {
+          requestAnimationFrame(() => {
+            editor.setDocument('json', saved);
+          });
+        }
+      }}
       onPressEnter={({ event: e }) => {
         if (e.shiftKey || isComposingRef.current) return;
         // when user like alt + enter to add ai message
         if (e.altKey && hotkey === combineKeys([KeyEnum.Alt, KeyEnum.Enter])) return true;
         const commandKey = isCommandPressed(e);
+        // In fullscreen mode, Enter inserts newline; only Cmd/Ctrl+Enter sends
+        if (expand) {
+          if (commandKey) {
+            send();
+            return true;
+          }
+          return;
+        }
         // when user like cmd + enter to send message
         if (useCmdEnterToSend) {
           if (commandKey) {
